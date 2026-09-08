@@ -94,7 +94,7 @@ initializeSocket(io);
 const mongoUri = process.env.MONGODB_URI || process.env.mongodburl;
 if (!mongoUri) {
   console.error('❌ MONGODB_URI or mongodburl not found in .env');
-} else {
+} else if (mongoose.connection.readyState === 0) {
   mongoose
     .connect(mongoUri)
     .then(() => console.log('🍃 MongoDB connected successfully'))
@@ -102,7 +102,11 @@ if (!mongoUri) {
 }
 
 const PORT = process.env.PORT || 5000;
-httpServer.listen(PORT, () => {
-  console.log(`🚀 AuraWave Server running on http://localhost:${PORT}`);
-  console.log(`📡 WebSocket server initialized`);
-});
+if (!process.env.VERCEL) {
+  httpServer.listen(PORT, () => {
+    console.log(`🚀 AuraWave Server running on http://localhost:${PORT}`);
+    console.log(`📡 WebSocket server initialized`);
+  });
+}
+
+export default app;
