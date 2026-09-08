@@ -9,11 +9,17 @@ dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const uploadsDir = path.join(__dirname, '../../uploads');
+const uploadsDir = process.env.VERCEL
+  ? path.join('/tmp', 'uploads')
+  : path.join(__dirname, '../../uploads');
 
-// Ensure local uploads directory exists
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
+// Ensure local uploads directory exists safely without crashing read-only lambdas
+try {
+  if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+  }
+} catch (fsErr) {
+  console.warn('⚠️ Note on uploads dir:', fsErr.message);
 }
 
 const isCloudinaryConfigured = () => {
