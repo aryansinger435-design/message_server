@@ -23,26 +23,28 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const httpServer = createServer(app);
 
-// Configure CORS
-const allowedOrigins = [
-  'http://localhost:5173',
-  'http://localhost:5174',
-  'http://localhost:3000',
-  process.env.CLIENT_URL,
-].filter(Boolean);
+// Clean up multiple leading slashes (e.g. //api -> /api)
+app.use((req, res, next) => {
+  if (req.url.startsWith('//')) {
+    req.url = req.url.replace(/^\/+/, '/');
+  }
+  next();
+});
 
+// Configure CORS
 app.use(
   cors({
     origin: (origin, callback) => {
-      // allow requests with no origin (like mobile apps, curl, or same-origin)
-      if (!origin || allowedOrigins.includes(origin) || true) {
-        return callback(null, true);
-      }
-      callback(new Error('Not allowed by CORS'));
+      // Reflect origin for all incoming web/mobile clients
+      callback(null, true);
     },
     credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
   })
 );
+
+app.options('*', cors());
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
