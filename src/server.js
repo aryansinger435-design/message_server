@@ -53,6 +53,15 @@ app.use(
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
+// Health check endpoint (Instant response, no DB required)
+app.get(['/health', '/api/health'], (req, res) => {
+  res.status(200).json({
+    status: 'online',
+    appName: 'AuraWave Backend',
+    timestamp: new Date().toISOString(),
+  });
+});
+
 // Database Connection for Serverless & Long-running instances
 let isConnected = false;
 const connectDB = async () => {
@@ -82,22 +91,18 @@ app.use(async (req, res, next) => {
 // Serve local media uploads statically
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
-// Mount API routes
-app.use('/api/auth', authRoutes);
-app.use('/api/users', userRoutes);
-app.use('/api/chats', chatRoutes);
-app.use('/api/messages', messageRoutes);
-app.use('/api/status', statusRoutes);
-app.use('/api/calls', callRoutes);
+// Mount API routes (supports both /api/path and /path when Vercel rewrites)
+const mountRoutes = (prefix) => {
+  app.use(`${prefix}/auth`, authRoutes);
+  app.use(`${prefix}/users`, userRoutes);
+  app.use(`${prefix}/chats`, chatRoutes);
+  app.use(`${prefix}/messages`, messageRoutes);
+  app.use(`${prefix}/status`, statusRoutes);
+  app.use(`${prefix}/calls`, callRoutes);
+};
 
-// Health check endpoint
-app.get('/api/health', (req, res) => {
-  res.status(200).json({
-    status: 'online',
-    appName: 'AuraWave Backend',
-    timestamp: new Date().toISOString(),
-  });
-});
+mountRoutes('/api');
+mountRoutes('');
 
 // Global Error Handler
 app.use((err, req, res, next) => {

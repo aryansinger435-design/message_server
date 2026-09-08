@@ -2,7 +2,7 @@ import User from '../models/User.model.js';
 import OTP from '../models/OTP.js';
 import { sendOTP } from '../config/nodemailer.js'; 
 import jwt from 'jsonwebtoken';
-import bcrypt from 'bcrypt';
+import bcrypt from 'bcryptjs';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'aurawave_secret_key_2026_secure';
 
