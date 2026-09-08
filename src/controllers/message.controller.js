@@ -2,10 +2,54 @@ import { Message } from '../models/Message.model.js';
 import { Chat } from '../models/Chat.model.js';
 import { User } from '../models/User.model.js';
 import { ApiError } from '../utils/ApiError.js';
+import { uploadMedia } from '../config/cloudinary.js';
+
+export const uploadAttachment = async (req, res, next) => {
+  try {
+    if (!req.file) {
+      throw new ApiError(400, 'No file uploaded');
+    }
+
+    let resourceType = 'auto';
+    if (req.file.mimetype.startsWith('image/')) resourceType = 'image';
+    else if (req.file.mimetype.startsWith('video/')) resourceType = 'video';
+    else if (req.file.mimetype.startsWith('audio/')) resourceType = 'video'; // Cloudinary handles audio as video
+    else resourceType = 'raw';
+
+    const uploaded = await uploadMedia(req.file.buffer, {
+      folder: 'aurawave_attachments',
+      resourceType,
+      originalname: req.file.originalname,
+      mimetype: req.file.mimetype,
+    });
+
+    res.status(200).json({
+      success: true,
+      data: {
+        fileUrl: uploaded.url,
+        fileName: req.file.originalname,
+        fileSize: req.file.size,
+        mimeType: req.file.mimetype,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
 
 export const sendMessage = async (req, res, next) => {
   try {
-    const { chatId, content, messageType = 'text', replyTo } = req.body;
+    const {
+      chatId,
+      content,
+      messageType = 'text',
+      replyTo,
+      fileUrl,
+      fileName,
+      fileSize,
+      voiceMessage,
+      voiceDuration,
+    } = req.body;
     const userId = req.user._id;
 
     const chat = await Chat.findById(chatId);
@@ -13,27 +57,29 @@ export const sendMessage = async (req, res, next) => {
       throw new ApiError(404, 'Chat not found');
     }
 
-    // Check if user is participant
-    if (!chat.participants.includes(userId)) {
+    if (!chat.participants.some(p => p.toString() === userId.toString())) {
       throw new ApiError(403, 'You are not a participant of this chat');
     }
 
     const message = new Message({
       chatId,
       sender: userId,
-      content,
+      content: content || (messageType === 'voice' ? '🎤 Voice message' : '📎 Attachment'),
       messageType,
       replyTo: replyTo || null,
+      fileUrl: fileUrl || null,
+      fileName: fileName || null,
+      fileSize: fileSize || null,
+      voiceMessage: voiceMessage || null,
+      voiceDuration: voiceDuration || null,
     });
 
     await message.save();
 
-    // Update chat last message
     chat.lastMessage = message._id;
     chat.lastMessageTime = new Date();
     await chat.save();
 
-    // Populate message
     const populatedMessage = await Message.findById(message._id)
       .populate('sender', 'username email avatar')
       .populate('replyTo');
@@ -50,18 +96,21 @@ export const sendMessage = async (req, res, next) => {
 export const getMessages = async (req, res, next) => {
   try {
     const { chatId } = req.params;
-    const { page = 1, limit = 50 } = req.query;
+    const { page = 1, limit = 100 } = req.query;
 
     const chat = await Chat.findById(chatId);
     if (!chat) {
       throw new ApiError(404, 'Chat not found');
     }
 
-    if (!chat.participants.includes(req.user._id)) {
+    if (!chat.participants.some(p => p.toString() === req.user._id.toString())) {
       throw new ApiError(403, 'Access denied');
     }
 
-    const messages = await Message.find({ chatId })
+    const messages = await Message.find({
+      chatId,
+      deletedBy: { $ne: req.user._id },
+    })
       .sort({ createdAt: -1 })
       .skip((page - 1) * limit)
       .limit(parseInt(limit))
@@ -69,7 +118,10 @@ export const getMessages = async (req, res, next) => {
       .populate('replyTo')
       .lean();
 
-    const total = await Message.countDocuments({ chatId });
+    const total = await Message.countDocuments({
+      chatId,
+      deletedBy: { $ne: req.user._id },
+    });
 
     res.status(200).json({
       success: true,
@@ -98,7 +150,7 @@ export const markAsRead = async (req, res, next) => {
       throw new ApiError(404, 'Message not found');
     }
 
-    if (!message.readBy.includes(userId)) {
+    if (!message.readBy.some(id => id.toString() === userId.toString())) {
       message.readBy.push(userId);
       await message.save();
     }
@@ -134,6 +186,7 @@ export const markAllAsRead = async (req, res, next) => {
 export const deleteMessage = async (req, res, next) => {
   try {
     const { messageId } = req.params;
+    const { deleteType = 'everyone' } = req.body; // 'everyone' or 'me'
     const userId = req.user._id;
 
     const message = await Message.findById(messageId);
@@ -141,15 +194,27 @@ export const deleteMessage = async (req, res, next) => {
       throw new ApiError(404, 'Message not found');
     }
 
-    if (message.sender.toString() !== userId.toString()) {
-      throw new ApiError(403, 'You can only delete your own messages');
+    if (deleteType === 'everyone') {
+      if (message.sender.toString() !== userId.toString()) {
+        throw new ApiError(403, 'You can only delete your own messages for everyone');
+      }
+      message.isDeletedForEveryone = true;
+      message.content = '🚫 This message was deleted';
+      message.fileUrl = null;
+      message.voiceMessage = null;
+      await message.save();
+    } else {
+      // Delete for me
+      if (!message.deletedBy.some(id => id.toString() === userId.toString())) {
+        message.deletedBy.push(userId);
+        await message.save();
+      }
     }
-
-    await message.deleteOne();
 
     res.status(200).json({
       success: true,
-      message: 'Message deleted successfully',
+      message: deleteType === 'everyone' ? 'Deleted for everyone' : 'Deleted for you',
+      data: message,
     });
   } catch (error) {
     next(error);
@@ -167,12 +232,17 @@ export const addReaction = async (req, res, next) => {
       throw new ApiError(404, 'Message not found');
     }
 
-    const existingReaction = message.reactions.find(
+    const existingIndex = message.reactions.findIndex(
       r => r.userId.toString() === userId.toString()
     );
 
-    if (existingReaction) {
-      existingReaction.reaction = reaction;
+    if (existingIndex > -1) {
+      if (message.reactions[existingIndex].reaction === reaction) {
+        // Toggle off if same reaction clicked
+        message.reactions.splice(existingIndex, 1);
+      } else {
+        message.reactions[existingIndex].reaction = reaction;
+      }
     } else {
       message.reactions.push({ userId, reaction });
     }

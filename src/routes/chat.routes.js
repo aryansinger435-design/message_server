@@ -13,8 +13,11 @@ import {
   unpinChat,
   getChatMessages,
 } from '../controllers/chat.controller.js';
+import { authenticateToken } from '../middleware/auth.middleware.js';
 
 const router = express.Router();
+
+router.use(authenticateToken);
 
 router.post('/', createChat);
 router.get('/', getChats);

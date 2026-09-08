@@ -1,8 +1,10 @@
 import User from '../models/User.model.js';
 import OTP from '../models/OTP.js';
-import { sendOTPEmail } from '../config/nodemailer.js';
+import { sendOTP } from '../config/nodemailer.js'; 
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
+
+const JWT_SECRET = process.env.JWT_SECRET || 'aurawave_secret_key_2026_secure';
 
 // Generate OTP
 const generateOTP = () => {
@@ -15,7 +17,7 @@ export const register = async (req, res) => {
         const { username, email, password } = req.body;
 
         const existingUser = await User.findOne({ 
-            $or: [{ email }, { username }] 
+            $or: [{ email: email.toLowerCase() }, { username }] 
         });
 
         if (existingUser) {
@@ -43,11 +45,11 @@ export const register = async (req, res) => {
         });
         await otpRecord.save();
 
-        await sendOTPEmail(email, otp);
+        await sendOTP(email, otp);
 
         const accessToken = jwt.sign(
             { userId: user._id },
-            process.env.JWT_SECRET,
+            JWT_SECRET,
             { expiresIn: '7d' }
         );
 
@@ -117,8 +119,14 @@ export const verifyOTP = async (req, res) => {
 
         const accessToken = jwt.sign(
             { userId: user._id },
-            process.env.JWT_SECRET,
+            JWT_SECRET,
             { expiresIn: '7d' }
+        );
+
+        const refreshToken = jwt.sign(
+            { userId: user._id },
+            JWT_SECRET,
+            { expiresIn: '30d' }
         );
 
         res.status(200).json({
@@ -131,6 +139,8 @@ export const verifyOTP = async (req, res) => {
                     email: user.email,
                     avatar: user.avatar,
                     status: user.status,
+                    about: user.about,
+                    phone: user.phone,
                     isVerified: user.isVerified,
                     friends: user.friends,
                     friendRequests: user.friendRequests,
@@ -138,7 +148,8 @@ export const verifyOTP = async (req, res) => {
                     createdAt: user.createdAt,
                     updatedAt: user.updatedAt
                 },
-                accessToken
+                accessToken,
+                refreshToken
             }
         });
 
@@ -189,11 +200,11 @@ export const resendOTP = async (req, res) => {
         });
         await otpRecord.save();
 
-        await sendOTPEmail(email, otp);
+        await sendOTP(email, otp);
 
         res.status(200).json({
             success: true,
-            message: 'OTP sent successfully. Please check your email.'
+            message: 'OTP sent successfully. Please check your email inbox or spam folder.'
         });
 
     } catch (error) {
@@ -242,13 +253,13 @@ export const login = async (req, res) => {
 
         const accessToken = jwt.sign(
             { userId: user._id },
-            process.env.JWT_SECRET,
+            JWT_SECRET,
             { expiresIn: '7d' }
         );
 
         const refreshToken = jwt.sign(
             { userId: user._id },
-            process.env.JWT_SECRET,
+            JWT_SECRET,
             { expiresIn: '30d' }
         );
 
@@ -256,7 +267,21 @@ export const login = async (req, res) => {
             success: true,
             message: 'Login successful',
             data: {
-                user,
+                user: {
+                    _id: user._id,
+                    username: user.username,
+                    email: user.email,
+                    avatar: user.avatar,
+                    status: user.status,
+                    about: user.about,
+                    phone: user.phone,
+                    isVerified: user.isVerified,
+                    friends: user.friends,
+                    friendRequests: user.friendRequests,
+                    lastSeen: user.lastSeen,
+                    createdAt: user.createdAt,
+                    updatedAt: user.updatedAt
+                },
                 accessToken,
                 refreshToken
             }
@@ -275,10 +300,10 @@ export const login = async (req, res) => {
 // Logout
 export const logout = async (req, res) => {
     try {
-        const userId = req.userId;
+        const userId = req.user?._id || req.userId || req.body?.userId;
         
         if (userId) {
-            await User.findByIdAndUpdate(userId, { status: 'offline' });
+            await User.findByIdAndUpdate(userId, { status: 'offline', lastSeen: new Date() });
         }
 
         res.status(200).json({
@@ -308,11 +333,11 @@ export const refreshToken = async (req, res) => {
             });
         }
 
-        const decoded = jwt.verify(refreshToken, process.env.JWT_SECRET);
+        const decoded = jwt.verify(refreshToken, JWT_SECRET);
         
         const accessToken = jwt.sign(
             { userId: decoded.userId },
-            process.env.JWT_SECRET,
+            JWT_SECRET,
             { expiresIn: '7d' }
         );
 
@@ -326,6 +351,113 @@ export const refreshToken = async (req, res) => {
         res.status(401).json({
             success: false,
             message: 'Invalid or expired refresh token'
+        });
+    }
+};
+
+// Forgot Password - Send OTP to user's email
+export const forgotPassword = async (req, res) => {
+    try {
+        const { email } = req.body;
+
+        if (!email) {
+            return res.status(400).json({
+                success: false,
+                message: 'Email address is required'
+            });
+        }
+
+        const user = await User.findOne({ email: email.toLowerCase() });
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                message: 'No account found with this email address'
+            });
+        }
+
+        await OTP.deleteMany({ email: email.toLowerCase() });
+
+        const otp = generateOTP();
+        const otpRecord = new OTP({
+            email: email.toLowerCase(),
+            otp
+        });
+        await otpRecord.save();
+
+        await sendOTP(email, otp);
+
+        res.status(200).json({
+            success: true,
+            message: 'Password reset code has been sent to your email.'
+        });
+
+    } catch (error) {
+        console.error('Forgot password error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to process forgot password request',
+            error: error.message
+        });
+    }
+};
+
+// Reset Password - Verify OTP and update password
+export const resetPassword = async (req, res) => {
+    try {
+        const { email, otp, newPassword } = req.body;
+
+        if (!email || !otp || !newPassword) {
+            return res.status(400).json({
+                success: false,
+                message: 'Email, OTP, and new password are required'
+            });
+        }
+
+        if (newPassword.length < 6) {
+            return res.status(400).json({
+                success: false,
+                message: 'Password must be at least 6 characters'
+            });
+        }
+
+        const otpRecord = await OTP.findOne({
+            email: email.toLowerCase(),
+            otp: otp.trim()
+        });
+
+        if (!otpRecord) {
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid or expired OTP code'
+            });
+        }
+
+        const user = await User.findOne({ email: email.toLowerCase() });
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                message: 'User not found'
+            });
+        }
+
+        const hashedPassword = await bcrypt.hash(newPassword, 10);
+        user.password = hashedPassword;
+        user.isVerified = true;
+        await user.save();
+
+        await OTP.deleteOne({ _id: otpRecord._id });
+
+        res.status(200).json({
+            success: true,
+            message: 'Password reset successfully! You can now sign in with your new password.'
+        });
+
+    } catch (error) {
+        console.error('Reset password error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to reset password',
+            error: error.message
         });
     }
 };

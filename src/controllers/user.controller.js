@@ -1,6 +1,22 @@
 import { User } from '../models/User.model.js';
 import { ApiError } from '../utils/ApiError.js';
 import sharp from 'sharp';
+import { uploadMedia } from '../config/cloudinary.js';
+
+export const getCurrentUser = async (req, res, next) => {
+  try {
+    const user = await User.findById(req.user._id).select('-password -__v');
+    if (!user) {
+      throw new ApiError(404, 'User not found');
+    }
+    res.status(200).json({
+      success: true,
+      data: user,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
 
 export const getUsers = async (req, res, next) => {
   try {
@@ -35,9 +51,9 @@ export const getUserById = async (req, res, next) => {
 
 export const updateUser = async (req, res, next) => {
   try {
-    const { username, email } = req.body;
+    const { username, about, phone } = req.body;
     
-    // Check if username or email already taken
+    // Check if username is taken
     if (username) {
       const existingUser = await User.findOne({ username, _id: { $ne: req.user._id } });
       if (existingUser) {
@@ -45,16 +61,14 @@ export const updateUser = async (req, res, next) => {
       }
     }
     
-    if (email) {
-      const existingUser = await User.findOne({ email, _id: { $ne: req.user._id } });
-      if (existingUser) {
-        throw new ApiError(409, 'Email already taken');
-      }
-    }
-    
+    const updateData = {};
+    if (username) updateData.username = username;
+    if (about !== undefined) updateData.about = about;
+    if (phone !== undefined) updateData.phone = phone;
+
     const user = await User.findByIdAndUpdate(
       req.user._id,
-      { username, email },
+      updateData,
       { new: true, runValidators: true }
     ).select('-password -__v');
     
@@ -74,17 +88,20 @@ export const updateAvatar = async (req, res, next) => {
     }
     
     // Process image with sharp
-    const processedImage = await sharp(req.file.buffer)
-      .resize(200, 200, { fit: 'cover' })
-      .jpeg({ quality: 80 })
+    const processedBuffer = await sharp(req.file.buffer)
+      .resize(300, 300, { fit: 'cover' })
+      .jpeg({ quality: 85 })
       .toBuffer();
     
-    // Convert to base64 for storage (or you can use cloud storage like S3)
-    const avatar = `data:image/jpeg;base64,${processedImage.toString('base64')}`;
+    const uploaded = await uploadMedia(processedBuffer, {
+      folder: 'aurawave_avatars',
+      resourceType: 'image',
+      originalname: `${req.user._id}_avatar.jpg`,
+    });
     
     const user = await User.findByIdAndUpdate(
       req.user._id,
-      { avatar },
+      { avatar: uploaded.url },
       { new: true }
     ).select('-password -__v');
     

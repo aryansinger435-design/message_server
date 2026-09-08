@@ -25,9 +25,13 @@ export const createChat = async (req, res, next) => {
       });
       
       if (existingChat) {
+        const populatedExistingChat = await Chat.findById(existingChat._id)
+          .populate('participants', 'username email avatar status lastSeen')
+          .populate('admin', 'username email avatar')
+          .populate('lastMessage');
         return res.status(200).json({
           success: true,
-          data: existingChat,
+          data: populatedExistingChat,
         });
       }
     }

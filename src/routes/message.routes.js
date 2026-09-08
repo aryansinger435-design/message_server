@@ -6,16 +6,21 @@ import {
   markAllAsRead,
   deleteMessage,
   addReaction,
+  uploadAttachment,
 } from '../controllers/message.controller.js';
-import { validate } from '../middleware/validate.middleware.js';
-import { messageSchema } from '../validators/message.validator.js';
+import { authenticateToken } from '../middleware/auth.middleware.js';
+import { upload } from '../middleware/upload.middleware.js';
 
 const router = express.Router();
 
-router.post('/', validate(messageSchema), sendMessage);
+router.use(authenticateToken);
+
+router.post('/upload', upload.single('file'), uploadAttachment);
+router.post('/', sendMessage);
 router.get('/:chatId', getMessages);
 router.put('/:messageId/read', markAsRead);
 router.put('/chat/:chatId/read-all', markAllAsRead);
+router.post('/:messageId/delete', deleteMessage);
 router.delete('/:messageId', deleteMessage);
 router.post('/:messageId/reactions', addReaction);
 

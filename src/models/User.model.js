@@ -38,10 +38,23 @@ const UserSchema = new mongoose.Schema({
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User'
     }],
+    about: {
+        type: String,
+        default: 'Hey there! I am using AuraWave.'
+    },
+    phone: {
+        type: String,
+        default: ''
+    },
+    blockedUsers: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User'
+    }],
     lastSeen: {
         type: Date,
         default: Date.now
     }
 }, { timestamps: true });
 
-export default mongoose.model('User', UserSchema);
+export const User = mongoose.model('User', UserSchema);
+export default User;

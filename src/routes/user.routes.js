@@ -1,5 +1,6 @@
 import express from 'express';
 import {
+  getCurrentUser,
   getUsers,
   getUserById,
   updateUser,
@@ -13,9 +14,14 @@ import {
   searchUsers,
 } from '../controllers/user.controller.js';
 import { upload } from '../middleware/upload.middleware.js';
+import { authenticateToken } from '../middleware/auth.middleware.js';
 
 const router = express.Router();
 
+// Apply auth middleware to all user routes
+router.use(authenticateToken);
+
+router.get('/me', getCurrentUser);
 router.get('/', getUsers);
 router.get('/search', searchUsers);
 router.get('/friends', getFriends);

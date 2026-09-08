@@ -1,38 +1,54 @@
 import { User } from '../models/User.model.js';
 import { Message } from '../models/Message.model.js';
 import { Chat } from '../models/Chat.model.js';
+import { Call } from '../models/Call.model.js';
 import jwt from 'jsonwebtoken';
 
+const JWT_SECRET = process.env.JWT_SECRET || 'aurawave_secret_key_2026_secure';
+
+// Track online user sockets: Map<userIdString, Set<socketId>>
 const userSockets = new Map();
+// Track active calls: Map<userIdString, { withUser: string, callType: string }>
+const activeCalls = new Map();
 
 export const initializeSocket = (io) => {
+  // Authentication Middleware for Socket.io
   io.use(async (socket, next) => {
     try {
-      const token = socket.handshake.auth.token;
+      const token =
+        socket.handshake.auth?.token ||
+        socket.handshake.headers?.authorization?.replace('Bearer ', '') ||
+        socket.handshake.query?.token;
+
       if (!token) {
-        return next(new Error('Authentication error'));
+        return next(new Error('Authentication error: No token provided'));
       }
 
-      const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+      const decoded = jwt.verify(token, JWT_SECRET);
       const user = await User.findById(decoded.userId).select('-password');
       if (!user) {
-        return next(new Error('User not found'));
+        return next(new Error('Authentication error: User not found'));
       }
 
       socket.user = user;
       next();
     } catch (error) {
-      next(new Error('Authentication error'));
+      console.error('Socket auth error:', error.message);
+      next(new Error('Authentication error: Invalid token'));
     }
   });
 
   io.on('connection', (socket) => {
-    console.log(`User connected: ${socket.user.username}`);
+    const userId = socket.user._id.toString();
+    console.log(`⚡ User connected: ${socket.user.username} (${socket.id})`);
 
-    // Store user socket
-    userSockets.set(socket.user._id.toString(), socket.id);
+    // Register user socket
+    if (!userSockets.has(userId)) {
+      userSockets.set(userId, new Set());
+    }
+    userSockets.get(userId).add(socket.id);
 
-    // Update user status
+    // Update user status in DB and broadcast to all connected clients
     User.findByIdAndUpdate(socket.user._id, {
       status: 'online',
       lastSeen: new Date(),
@@ -40,35 +56,64 @@ export const initializeSocket = (io) => {
       io.emit('user-status', {
         userId: socket.user._id,
         status: 'online',
+        lastSeen: new Date(),
       });
     });
+
+    // Send initial list of all online users to this socket
+    socket.emit('online-users', Array.from(userSockets.keys()));
 
     // Join user's personal room
-    socket.join(`user:${socket.user._id}`);
+    socket.join(`user:${userId}`);
 
     // Join all user's chat rooms
-    Chat.find({ participants: socket.user._id }).then(chats => {
-      chats.forEach(chat => {
-        socket.join(`chat:${chat._id}`);
-      });
+    Chat.find({ participants: socket.user._id })
+      .then(chats => {
+        chats.forEach(chat => {
+          socket.join(`chat:${chat._id}`);
+        });
+      })
+      .catch(err => console.error('Error joining chat rooms:', err.message));
+
+    // Handle joining a new chat room dynamically
+    socket.on('join-chat', (chatId) => {
+      socket.join(`chat:${chatId}`);
     });
 
-    // Handle sending messages
+    // ==========================================
+    // 💬 REAL-TIME MESSAGING
+    // ==========================================
+
     socket.on('send-message', async (data) => {
       try {
-        const { chatId, content, messageType = 'text', replyTo } = data;
+        const {
+          chatId,
+          content,
+          messageType = 'text',
+          replyTo,
+          fileUrl,
+          fileName,
+          fileSize,
+          voiceMessage,
+          voiceDuration,
+        } = data;
 
         const chat = await Chat.findById(chatId);
-        if (!chat || !chat.participants.includes(socket.user._id)) {
-          return socket.emit('error', { message: 'Unauthorized' });
+        if (!chat || !chat.participants.some(p => p.toString() === userId)) {
+          return socket.emit('error', { message: 'Unauthorized or chat not found' });
         }
 
         const message = new Message({
           chatId,
           sender: socket.user._id,
-          content,
+          content: content || (messageType === 'voice' ? '🎤 Voice message' : '📎 Attachment'),
           messageType,
           replyTo: replyTo || null,
+          fileUrl: fileUrl || null,
+          fileName: fileName || null,
+          fileSize: fileSize || null,
+          voiceMessage: voiceMessage || null,
+          voiceDuration: voiceDuration || null,
         });
 
         await message.save();
@@ -81,72 +126,271 @@ export const initializeSocket = (io) => {
           .populate('sender', 'username email avatar')
           .populate('replyTo');
 
-        // Emit to all participants in chat
+        // Broadcast to everyone in chat room
         io.to(`chat:${chatId}`).emit('new-message', populatedMessage);
 
-        // Emit to sender for confirmation
+        // Acknowledge back to sender
         socket.emit('message-sent', populatedMessage);
-
-        // Send notifications to other participants
-        chat.participants.forEach(participantId => {
-          if (participantId.toString() !== socket.user._id.toString()) {
-            const participantSocketId = userSockets.get(participantId.toString());
-            if (!participantSocketId) {
-              // User is offline, handle notification (save to DB, push notification, etc.)
-              console.log(`User ${participantId} is offline`);
-            }
-          }
-        });
-
       } catch (error) {
+        console.error('send-message error:', error.message);
         socket.emit('error', { message: error.message });
       }
     });
 
-    // Handle typing indicator
+    // Typing Indicator
     socket.on('typing', ({ chatId, isTyping }) => {
       socket.to(`chat:${chatId}`).emit('user-typing', {
+        chatId,
         userId: socket.user._id,
         username: socket.user.username,
         isTyping,
       });
     });
 
-    // Handle mark as read
-    socket.on('mark-read', async ({ messageId }) => {
+    // Mark as read
+    socket.on('mark-read', async ({ messageId, chatId }) => {
       try {
-        await Message.findByIdAndUpdate(messageId, {
-          $addToSet: { readBy: socket.user._id },
-        });
+        if (messageId) {
+          await Message.findByIdAndUpdate(messageId, {
+            $addToSet: { readBy: socket.user._id },
+          });
 
-        const message = await Message.findById(messageId);
-        if (message) {
-          io.to(`chat:${message.chatId}`).emit('message-read', {
+          io.to(`chat:${chatId}`).emit('message-read', {
             messageId,
+            chatId,
+            userId: socket.user._id,
+          });
+        } else if (chatId) {
+          await Message.updateMany(
+            { chatId, readBy: { $ne: socket.user._id } },
+            { $addToSet: { readBy: socket.user._id } }
+          );
+
+          io.to(`chat:${chatId}`).emit('chat-read', {
+            chatId,
             userId: socket.user._id,
           });
         }
       } catch (error) {
-        console.error('Error marking message as read:', error);
+        console.error('mark-read socket error:', error.message);
       }
     });
 
-    // Handle disconnection
+    // Message reaction
+    socket.on('message-reaction', async ({ messageId, reaction, chatId }) => {
+      try {
+        const message = await Message.findById(messageId);
+        if (!message) return;
+
+        const existingIndex = message.reactions.findIndex(
+          r => r.userId.toString() === userId
+        );
+
+        if (existingIndex > -1) {
+          if (message.reactions[existingIndex].reaction === reaction) {
+            message.reactions.splice(existingIndex, 1);
+          } else {
+            message.reactions[existingIndex].reaction = reaction;
+          }
+        } else {
+          message.reactions.push({ userId: socket.user._id, reaction });
+        }
+
+        await message.save();
+
+        io.to(`chat:${chatId}`).emit('reaction-updated', {
+          messageId,
+          reactions: message.reactions,
+          userId,
+        });
+      } catch (error) {
+        console.error('message-reaction error:', error.message);
+      }
+    });
+
+    // Delete message event
+    socket.on('delete-message', async ({ messageId, chatId, deleteType }) => {
+      try {
+        if (deleteType === 'everyone') {
+          io.to(`chat:${chatId}`).emit('message-deleted', {
+            messageId,
+            chatId,
+            deleteType: 'everyone',
+          });
+        }
+      } catch (error) {
+        console.error('delete-message socket error:', error.message);
+      }
+    });
+
+    // ==========================================
+    // 📞 WEBRTC VOICE & VIDEO CALL SIGNALING
+    // ==========================================
+
+    // 1. Initiate Call
+    socket.on('call-user', (data) => {
+      const { userToCall, signalData, callType = 'voice' } = data;
+      if (!userToCall) return;
+      const targetUserId = userToCall.toString();
+
+      console.log(`📞 Call initiated by ${socket.user.username} to user ${targetUserId} (${callType})`);
+
+      // Check if recipient is online in userSockets or room
+      const recipientSockets = userSockets.get(targetUserId);
+      const isOnline =
+        (recipientSockets && recipientSockets.size > 0) ||
+        (io.sockets.adapter.rooms.get(`user:${targetUserId}`)?.size > 0);
+
+      if (!isOnline) {
+        // Recipient is offline, log missed call
+        Call.create({
+          caller: socket.user._id,
+          receiver: userToCall,
+          callType,
+          status: 'missed',
+          duration: 0,
+        }).catch(() => {});
+
+        return socket.emit('call-failed', {
+          reason: 'offline',
+          message: 'Contact is currently offline.',
+        });
+      }
+
+      // Track active call
+      activeCalls.set(userId, { withUser: targetUserId, callType });
+
+      // Relay incoming call to user's room
+      io.to(`user:${targetUserId}`).emit('incoming-call', {
+        signal: signalData,
+        from: userId,
+        caller: {
+          _id: socket.user._id,
+          username: socket.user.username,
+          avatar: socket.user.avatar,
+        },
+        callType,
+      });
+    });
+
+    // 2. Accept Call
+    socket.on('answer-call', (data) => {
+      const { signal, to, callType = 'voice' } = data;
+      if (!to) return;
+      const targetUserId = to.toString();
+
+      console.log(`✅ Call answered by ${socket.user.username} for user ${targetUserId}`);
+
+      activeCalls.set(userId, { withUser: targetUserId, callType });
+
+      // Relay call-accepted to caller's room
+      io.to(`user:${targetUserId}`).emit('call-accepted', {
+        signal,
+        from: userId,
+        callType,
+      });
+    });
+
+    // 3. ICE Candidate Relay
+    socket.on('ice-candidate', (data) => {
+      const { to, candidate } = data;
+      if (!to || !candidate) return;
+      const targetUserId = to.toString();
+
+      io.to(`user:${targetUserId}`).emit('ice-candidate', {
+        candidate,
+        from: userId,
+      });
+    });
+
+    // 4. Reject Call
+    socket.on('reject-call', (data) => {
+      const { to, callType = 'voice' } = data;
+      if (!to) return;
+      const targetUserId = to.toString();
+
+      console.log(`❌ Call rejected between ${userId} and ${targetUserId}`);
+
+      activeCalls.delete(targetUserId);
+      activeCalls.delete(userId);
+
+      // Log rejected call
+      Call.create({
+        caller: to,
+        receiver: socket.user._id,
+        callType,
+        status: 'rejected',
+        duration: 0,
+      }).catch(() => {});
+
+      io.to(`user:${targetUserId}`).emit('call-rejected', {
+        message: 'Call was declined',
+        from: userId,
+      });
+    });
+
+    // 5. End Call
+    socket.on('end-call', (data) => {
+      const { to, duration = 0, callType = 'voice' } = data;
+      const targetUserId = to ? to.toString() : null;
+
+      console.log(`🛑 Call ended by ${socket.user.username}, duration: ${duration}s`);
+
+      activeCalls.delete(userId);
+      if (targetUserId) {
+        activeCalls.delete(targetUserId);
+
+        // Log completed call
+        Call.create({
+          caller: socket.user._id,
+          receiver: to,
+          callType,
+          status: duration > 0 ? 'completed' : 'missed',
+          duration,
+        }).catch(() => {});
+
+        io.to(`user:${targetUserId}`).emit('call-ended', {
+          duration,
+          from: userId,
+        });
+      }
+    });
+
+    // ==========================================
+    // 🚪 DISCONNECTION
+    // ==========================================
     socket.on('disconnect', async () => {
-      console.log(`User disconnected: ${socket.user.username}`);
-      
-      userSockets.delete(socket.user._id.toString());
+      console.log(`🔌 User disconnected: ${socket.user.username} (${socket.id})`);
 
-      await User.findByIdAndUpdate(socket.user._id, {
-        status: 'offline',
-        lastSeen: new Date(),
-      });
+      const userSocketSet = userSockets.get(userId);
+      if (userSocketSet) {
+        userSocketSet.delete(socket.id);
+        if (userSocketSet.size === 0) {
+          userSockets.delete(userId);
 
-      io.emit('user-status', {
-        userId: socket.user._id,
-        status: 'offline',
-        lastSeen: new Date(),
-      });
+          // If was in an active call, notify peer
+          if (activeCalls.has(userId)) {
+            const callInfo = activeCalls.get(userId);
+            activeCalls.delete(userId);
+            if (callInfo?.withUser) {
+              activeCalls.delete(callInfo.withUser);
+              io.to(`user:${callInfo.withUser}`).emit('call-ended', { duration: 0 });
+            }
+          }
+
+          // Update user status to offline
+          await User.findByIdAndUpdate(socket.user._id, {
+            status: 'offline',
+            lastSeen: new Date(),
+          });
+
+          io.emit('user-status', {
+            userId: socket.user._id,
+            status: 'offline',
+            lastSeen: new Date(),
+          });
+        }
+      }
     });
   });
 };
