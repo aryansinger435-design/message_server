@@ -53,6 +53,32 @@ app.use(
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
+// Database Connection for Serverless & Long-running instances
+let isConnected = false;
+const connectDB = async () => {
+  if (isConnected || mongoose.connection.readyState >= 1) return;
+  const mongoUri = process.env.MONGODB_URI || process.env.mongodburl;
+  if (!mongoUri) {
+    console.error('❌ MONGODB_URI or mongodburl not found in .env');
+    return;
+  }
+  try {
+    await mongoose.connect(mongoUri, {
+      serverSelectionTimeoutMS: 5000,
+    });
+    isConnected = true;
+    console.log('🍃 MongoDB connected successfully');
+  } catch (err) {
+    console.error('❌ MongoDB connection error:', err.message);
+  }
+};
+
+// Middleware to ensure DB connection on serverless calls
+app.use(async (req, res, next) => {
+  await connectDB();
+  next();
+});
+
 // Serve local media uploads statically
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
@@ -84,31 +110,20 @@ app.use((err, req, res, next) => {
   });
 });
 
-// Setup Socket.io
-const io = new Server(httpServer, {
-  cors: {
-    origin: '*',
-    methods: ['GET', 'POST'],
-    credentials: true,
-  },
-  pingTimeout: 60000,
-});
-
-initializeSocket(io);
-
-// Database Connection
-const mongoUri = process.env.MONGODB_URI || process.env.mongodburl;
-if (!mongoUri) {
-  console.error('❌ MONGODB_URI or mongodburl not found in .env');
-} else if (mongoose.connection.readyState === 0) {
-  mongoose
-    .connect(mongoUri)
-    .then(() => console.log('🍃 MongoDB connected successfully'))
-    .catch((err) => console.error('❌ MongoDB connection error:', err.message));
-}
-
-const PORT = process.env.PORT || 5000;
+// Setup Socket.io & HTTP Listen for non-serverless environments
 if (!process.env.VERCEL) {
+  const io = new Server(httpServer, {
+    cors: {
+      origin: '*',
+      methods: ['GET', 'POST'],
+      credentials: true,
+    },
+    pingTimeout: 60000,
+  });
+
+  initializeSocket(io);
+
+  const PORT = process.env.PORT || 5000;
   httpServer.listen(PORT, () => {
     console.log(`🚀 AuraWave Server running on http://localhost:${PORT}`);
     console.log(`📡 WebSocket server initialized`);
