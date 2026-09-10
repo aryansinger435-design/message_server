@@ -17,6 +17,16 @@ import { initializeSocket } from './socket/socket.handler.js';
 
 dotenv.config();
 
+// Global Exception & Rejection Handlers to prevent unexpected server crashes
+process.on('uncaughtException', (err) => {
+  console.error('❌ Uncaught Exception:', err.message);
+  console.error(err.stack);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -62,29 +72,69 @@ app.get(['/health', '/api/health'], (req, res) => {
   });
 });
 
-// Database Connection for Serverless & Long-running instances
+// Database Connection with Realtime Terminal Logging & Serverless support
 let isConnected = false;
+
+// Setup Mongoose connection lifecycle event listeners
+mongoose.connection.on('connected', () => {
+  const host = mongoose.connection.host || 'unknown';
+  const name = mongoose.connection.name || 'default';
+  console.log(`🍃 Mongoose Connection Established -> Database: [${name}] on Host: [${host}]`);
+});
+
+mongoose.connection.on('error', (err) => {
+  console.error(`❌ Mongoose Connection Error: ${err.message}`);
+});
+
+mongoose.connection.on('disconnected', () => {
+  console.warn('⚠️ Mongoose Disconnected from MongoDB');
+  isConnected = false;
+});
+
 const connectDB = async () => {
-  if (isConnected || mongoose.connection.readyState >= 1) return;
-  const mongoUri = process.env.MONGODB_URI || process.env.mongodburl;
+  if (isConnected || mongoose.connection.readyState === 1) {
+    return mongoose.connection;
+  }
+
+  const rawUri = process.env.mongodburl || process.env.MONGODB_URI;
+  const mongoUri = rawUri ? rawUri.trim() : '';
+
   if (!mongoUri) {
     console.error('❌ MONGODB_URI or mongodburl not found in .env');
     return;
   }
+
   try {
-    await mongoose.connect(mongoUri, {
-      serverSelectionTimeoutMS: 5000,
+    const conn = await mongoose.connect(mongoUri, {
+      serverSelectionTimeoutMS: 8000,
     });
     isConnected = true;
-    console.log('🍃 MongoDB connected successfully');
+
+    // Mask credentials for secure display in terminal
+    const sanitizedUri = mongoUri.replace(/(mongodb(?:\+srv)?:\/\/[^:]+:)[^@]+(@.+)/, '$1******$2');
+
+    console.log('🍃 ========================================================');
+    console.log('🍃 ✅ MongoDB / Mongoose Connected Successfully!');
+    console.log(`🍃 Database Name : ${conn.connection.name}`);
+    console.log(`🍃 Host          : ${conn.connection.host}`);
+    console.log(`🍃 MongoDB URL   : ${sanitizedUri}`);
+    console.log(`🍃 Ready State   : ${conn.connection.readyState} (1 = Connected)`);
+    console.log('🍃 ========================================================');
+
+    return conn;
   } catch (err) {
-    console.error('❌ MongoDB connection error:', err.message);
+    console.error('❌ MongoDB Connection Error:', err.message);
   }
 };
 
-// Middleware to ensure DB connection on serverless calls
+// Immediately initiate DB connection on startup
+connectDB();
+
+// Middleware to ensure DB connection on serverless / cold-start calls
 app.use(async (req, res, next) => {
-  await connectDB();
+  if (mongoose.connection.readyState !== 1) {
+    await connectDB();
+  }
   next();
 });
 
@@ -132,10 +182,36 @@ if (!process.env.VERCEL) {
   initializeSocket(io);
 
   const PORT = process.env.PORT || 5000;
+
+  httpServer.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(`❌ Port ${PORT} is already in use. Please wait a moment or terminate the existing process.`);
+    } else {
+      console.error('❌ HTTP Server Error:', err.message);
+    }
+  });
+
   httpServer.listen(PORT, () => {
     console.log(`🚀 AuraWave Server running on http://localhost:${PORT}`);
     console.log(`📡 WebSocket server initialized`);
   });
+
+  // Graceful shutdown handlers for nodemon restarts and termination signals
+  const gracefulExit = () => {
+    httpServer.close(() => {
+      mongoose.connection.close(false).finally(() => {
+        process.exit(0);
+      });
+    });
+  };
+
+  process.once('SIGUSR2', () => {
+    httpServer.close(() => {
+      process.kill(process.pid, 'SIGUSR2');
+    });
+  });
+  process.on('SIGINT', gracefulExit);
+  process.on('SIGTERM', gracefulExit);
 }
 
 export default app;
