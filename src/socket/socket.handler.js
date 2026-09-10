@@ -10,6 +10,8 @@ const userSockets = new Map();
 // Track active calls: Map<userIdString, { withUser: string, callType: string }>
 const activeCalls = new Map();
 
+export const getOnlineUserIds = () => Array.from(userSockets.keys());
+
 export const initializeSocket = (io) => {
   // Authentication Middleware for Socket.io
   io.use(async (socket, next) => {
@@ -248,6 +250,18 @@ export const initializeSocket = (io) => {
     // 📞 WEBRTC VOICE & VIDEO CALL SIGNALING
     // ==========================================
 
+    // Helper to reliably deliver events to a user via both their personal room and direct socket IDs
+    const emitToUser = (targetId, eventName, payload) => {
+      if (!targetId) return;
+      io.to(`user:${targetId}`).emit(eventName, payload);
+      const targetSockets = userSockets.get(targetId);
+      if (targetSockets && targetSockets.size > 0) {
+        targetSockets.forEach((sId) => {
+          io.to(sId).emit(eventName, payload);
+        });
+      }
+    };
+
     // 1. Initiate Call
     socket.on('call-user', (data) => {
       const { userToCall, signalData, callType = 'voice' } = data;
@@ -287,8 +301,8 @@ export const initializeSocket = (io) => {
       // Track active call
       activeCalls.set(userId, { withUser: targetUserId, callType });
 
-      // Relay incoming call to user's room
-      io.to(`user:${targetUserId}`).emit('incoming-call', {
+      // Relay incoming call to user via room and direct socket IDs
+      emitToUser(targetUserId, 'incoming-call', {
         signal: signalData,
         from: userId,
         caller: {
@@ -310,8 +324,7 @@ export const initializeSocket = (io) => {
 
       activeCalls.set(userId, { withUser: targetUserId, callType });
 
-      // Relay call-accepted to caller's room
-      io.to(`user:${targetUserId}`).emit('call-accepted', {
+      emitToUser(targetUserId, 'call-accepted', {
         signal,
         from: userId,
         callType,
@@ -324,7 +337,7 @@ export const initializeSocket = (io) => {
       const targetUserId = sanitizeId(to);
       if (!targetUserId || !candidate) return;
 
-      io.to(`user:${targetUserId}`).emit('ice-candidate', {
+      emitToUser(targetUserId, 'ice-candidate', {
         candidate,
         from: userId,
       });
@@ -350,7 +363,7 @@ export const initializeSocket = (io) => {
         duration: 0,
       }).catch(() => {});
 
-      io.to(`user:${targetUserId}`).emit('call-rejected', {
+      emitToUser(targetUserId, 'call-rejected', {
         message: 'Call was declined',
         from: userId,
       });
@@ -376,7 +389,7 @@ export const initializeSocket = (io) => {
           duration,
         }).catch(() => {});
 
-        io.to(`user:${targetUserId}`).emit('call-ended', {
+        emitToUser(targetUserId, 'call-ended', {
           duration,
           from: userId,
         });

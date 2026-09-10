@@ -13,7 +13,7 @@ import chatRoutes from './routes/chat.routes.js';
 import messageRoutes from './routes/message.routes.js';
 import statusRoutes from './routes/status.routes.js';
 import callRoutes from './routes/call.routes.js';
-import { initializeSocket } from './socket/socket.handler.js';
+import { initializeSocket, getOnlineUserIds } from './socket/socket.handler.js';
 
 // Global Exception & Rejection Handlers to prevent unexpected server crashes
 process.on('uncaughtException', (err) => {
@@ -66,6 +66,7 @@ app.get(['/health', '/api/health'], (req, res) => {
   res.status(200).json({
     status: 'online',
     appName: 'AuraWave Backend',
+    onlineUserIds: getOnlineUserIds ? getOnlineUserIds() : [],
     timestamp: new Date().toISOString(),
   });
 });
