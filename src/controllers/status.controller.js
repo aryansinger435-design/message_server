@@ -19,16 +19,16 @@ export const createStatus = async (req, res, next) => {
       finalContent = uploaded.url;
     }
 
-    if (!finalContent) {
+    if (!finalContent || !finalContent.trim()) {
       throw new ApiError(400, 'Status content or media file is required');
     }
 
     const status = new Status({
       user: req.user._id,
-      type: req.file ? (req.file.mimetype.startsWith('video/') ? 'video' : 'image') : type,
-      content: finalContent,
-      caption,
-      backgroundColor,
+      type: req.file ? (req.file.mimetype.startsWith('video/') ? 'video' : 'image') : (type || 'text'),
+      content: finalContent.trim(),
+      caption: (caption || '').trim(),
+      backgroundColor: backgroundColor || '#075E54',
     });
 
     await status.save();
@@ -53,28 +53,23 @@ export const createStatus = async (req, res, next) => {
 export const getRecentStatuses = async (req, res, next) => {
   try {
     const currentUserId = req.user._id;
-    const currentUser = await User.findById(currentUserId);
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
-    // Get statuses from friends and the user
-    const targetUserIds = [
-      currentUserId,
-      ...(currentUser.friends || []),
-    ];
-
-    // If user has few friends, also show other verified users' statuses for demo/discoverability
     const allRecentStatuses = await Status.find({
       user: { $ne: currentUserId },
+      createdAt: { $gte: oneDayAgo },
     })
       .populate('user', 'username avatar')
       .populate('viewers.user', 'username avatar')
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .lean();
 
     // Group by user
     const userMap = new Map();
 
     for (const status of allRecentStatuses) {
       if (!status.user) continue;
-      const uId = status.user._id.toString();
+      const uId = status.user._id ? status.user._id.toString() : status.user.toString();
 
       if (!userMap.has(uId)) {
         userMap.set(uId, {
@@ -86,9 +81,10 @@ export const getRecentStatuses = async (req, res, next) => {
       }
 
       const group = userMap.get(uId);
-      const isViewed = status.viewers.some(
-        v => v.user && v.user._id.toString() === currentUserId.toString()
-      );
+      const isViewed = (status.viewers || []).some((v) => {
+        const viewerId = v.user?._id ? v.user._id.toString() : (v.user ? v.user.toString() : '');
+        return viewerId && viewerId === currentUserId.toString();
+      });
 
       if (!isViewed) {
         group.allViewed = false;
@@ -117,9 +113,14 @@ export const getRecentStatuses = async (req, res, next) => {
 
 export const getMyStatuses = async (req, res, next) => {
   try {
-    const statuses = await Status.find({ user: req.user._id })
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const statuses = await Status.find({
+      user: req.user._id,
+      createdAt: { $gte: oneDayAgo },
+    })
       .populate('viewers.user', 'username avatar lastSeen')
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .lean();
 
     res.status(200).json({
       success: true,
