@@ -250,15 +250,18 @@ export const initializeSocket = (io) => {
     // 📞 WEBRTC VOICE & VIDEO CALL SIGNALING
     // ==========================================
 
-    // Helper to reliably deliver events to a user via both their personal room and direct socket IDs
+    // Helper to deliver events to a user without duplication
     const emitToUser = (targetId, eventName, payload) => {
       if (!targetId) return;
-      io.to(`user:${targetId}`).emit(eventName, payload);
       const targetSockets = userSockets.get(targetId);
       if (targetSockets && targetSockets.size > 0) {
+        // Direct socket delivery to all active devices of this user
         targetSockets.forEach((sId) => {
           io.to(sId).emit(eventName, payload);
         });
+      } else {
+        // Fallback to personal room
+        io.to(`user:${targetId}`).emit(eventName, payload);
       }
     };
 
@@ -276,9 +279,10 @@ export const initializeSocket = (io) => {
       // Check if recipient is online in userSockets or room
       const recipientSockets = userSockets.get(targetUserId);
       const roomSockets = io.sockets.adapter.rooms.get(`user:${targetUserId}`);
-      const isOnline =
+      const isOnline = Boolean(
         (recipientSockets && recipientSockets.size > 0) ||
-        (roomSockets && roomSockets.size > 0);
+        (roomSockets && roomSockets.size > 0)
+      );
 
       console.log(`ℹ️ Recipient ${targetUserId} status: online=${isOnline} (sockets: ${recipientSockets?.size || 0}, room: ${roomSockets?.size || 0})`);
 
@@ -406,29 +410,35 @@ export const initializeSocket = (io) => {
       if (userSocketSet) {
         userSocketSet.delete(socket.id);
         if (userSocketSet.size === 0) {
-          userSockets.delete(userId);
+          // Grace period for mobile/network blips before declaring user offline
+          setTimeout(async () => {
+            const currentSockets = userSockets.get(userId);
+            if (!currentSockets || currentSockets.size === 0) {
+              userSockets.delete(userId);
 
-          // If was in an active call, notify peer
-          if (activeCalls.has(userId)) {
-            const callInfo = activeCalls.get(userId);
-            activeCalls.delete(userId);
-            if (callInfo?.withUser) {
-              activeCalls.delete(callInfo.withUser);
-              io.to(`user:${callInfo.withUser}`).emit('call-ended', { duration: 0 });
+              // If was in an active call, notify peer
+              if (activeCalls.has(userId)) {
+                const callInfo = activeCalls.get(userId);
+                activeCalls.delete(userId);
+                if (callInfo?.withUser) {
+                  activeCalls.delete(callInfo.withUser);
+                  emitToUser(callInfo.withUser, 'call-ended', { duration: 0 });
+                }
+              }
+
+              const now = new Date();
+              await User.findByIdAndUpdate(socket.user._id, {
+                status: 'offline',
+                lastSeen: now,
+              }).catch(() => {});
+
+              io.emit('user-status', {
+                userId: socket.user._id,
+                status: 'offline',
+                lastSeen: now,
+              });
             }
-          }
-
-          // Update user status to offline
-          await User.findByIdAndUpdate(socket.user._id, {
-            status: 'offline',
-            lastSeen: new Date(),
-          });
-
-          io.emit('user-status', {
-            userId: socket.user._id,
-            status: 'offline',
-            lastSeen: new Date(),
-          });
+          }, 4000);
         }
       }
     });

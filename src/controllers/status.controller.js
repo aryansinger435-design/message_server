@@ -35,6 +35,11 @@ export const createStatus = async (req, res, next) => {
 
     const populated = await Status.findById(status._id).populate('user', 'username avatar');
 
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('new-status', populated);
+    }
+
     res.status(201).json({
       success: true,
       message: 'Status created successfully',
@@ -145,6 +150,11 @@ export const viewStatus = async (req, res, next) => {
         viewedAt: new Date(),
       });
       await status.save();
+
+      const io = req.app.get('io');
+      if (io) {
+        io.emit('status-viewed', { statusId, userId: currentUserId });
+      }
     }
 
     res.status(200).json({
@@ -171,6 +181,11 @@ export const deleteStatus = async (req, res, next) => {
     }
 
     await status.deleteOne();
+
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('new-status', { deletedId: statusId });
+    }
 
     res.status(200).json({
       success: true,
