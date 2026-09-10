@@ -49,6 +49,7 @@ export const sendMessage = async (req, res, next) => {
       fileSize,
       voiceMessage,
       voiceDuration,
+      clientTempId,
     } = req.body;
     const userId = req.user._id;
 
@@ -59,6 +60,19 @@ export const sendMessage = async (req, res, next) => {
 
     if (!chat.participants.some(p => p.toString() === userId.toString())) {
       throw new ApiError(403, 'You are not a participant of this chat');
+    }
+
+    // Idempotency check: If a message with this clientTempId was already processed, return it
+    if (clientTempId) {
+      const existing = await Message.findOne({ chatId, clientTempId })
+        .populate('sender', 'username email avatar')
+        .populate('replyTo');
+      if (existing) {
+        return res.status(200).json({
+          success: true,
+          data: existing,
+        });
+      }
     }
 
     const message = new Message({
@@ -72,6 +86,7 @@ export const sendMessage = async (req, res, next) => {
       fileSize: fileSize || null,
       voiceMessage: voiceMessage || null,
       voiceDuration: voiceDuration || null,
+      clientTempId: clientTempId || null,
     });
 
     await message.save();
@@ -83,6 +98,12 @@ export const sendMessage = async (req, res, next) => {
     const populatedMessage = await Message.findById(message._id)
       .populate('sender', 'username email avatar')
       .populate('replyTo');
+
+    // If socket.io is available on the express app, broadcast to everyone in the chat room
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`chat:${chatId}`).emit('new-message', populatedMessage);
+    }
 
     res.status(201).json({
       success: true,

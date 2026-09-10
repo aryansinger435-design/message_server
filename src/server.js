@@ -181,6 +181,7 @@ if (!process.env.VERCEL) {
     pingTimeout: 60000,
   });
 
+  app.set('io', io);
   initializeSocket(io);
 
   const PORT = process.env.PORT || 5000;

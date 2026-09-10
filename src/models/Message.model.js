@@ -81,6 +81,11 @@ const messageSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
   }],
+  clientTempId: {
+    type: String,
+    default: null,
+    index: true,
+  },
 }, {
   timestamps: true,
 });
@@ -88,6 +93,7 @@ const messageSchema = new mongoose.Schema({
 // Indexes for performance
 messageSchema.index({ chatId: 1, createdAt: -1 });
 messageSchema.index({ sender: 1 });
+messageSchema.index({ chatId: 1, clientTempId: 1 });
 
 export const Message = mongoose.model('Message', messageSchema);
 export default Message;

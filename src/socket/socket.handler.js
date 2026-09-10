@@ -95,11 +95,23 @@ export const initializeSocket = (io) => {
           fileSize,
           voiceMessage,
           voiceDuration,
+          clientTempId,
         } = data;
 
         const chat = await Chat.findById(chatId);
         if (!chat || !chat.participants.some(p => p.toString() === userId)) {
           return socket.emit('error', { message: 'Unauthorized or chat not found' });
+        }
+
+        // Idempotency check: If a message with this clientTempId was already processed, don't duplicate
+        if (clientTempId) {
+          const existing = await Message.findOne({ chatId, clientTempId })
+            .populate('sender', 'username email avatar')
+            .populate('replyTo');
+          if (existing) {
+            io.to(`chat:${chatId}`).emit('new-message', existing);
+            return socket.emit('message-sent', existing);
+          }
         }
 
         const message = new Message({
@@ -113,6 +125,7 @@ export const initializeSocket = (io) => {
           fileSize: fileSize || null,
           voiceMessage: voiceMessage || null,
           voiceDuration: voiceDuration || null,
+          clientTempId: clientTempId || null,
         });
 
         await message.save();
