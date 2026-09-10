@@ -1,9 +1,9 @@
+import 'dotenv/config';
 import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
 import mongoose from 'mongoose';
-import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -14,8 +14,6 @@ import messageRoutes from './routes/message.routes.js';
 import statusRoutes from './routes/status.routes.js';
 import callRoutes from './routes/call.routes.js';
 import { initializeSocket } from './socket/socket.handler.js';
-
-dotenv.config();
 
 // Global Exception & Rejection Handlers to prevent unexpected server crashes
 process.on('uncaughtException', (err) => {
@@ -159,8 +157,12 @@ mountRoutes('');
 
 // Global Error Handler
 app.use((err, req, res, next) => {
-  console.error('Server error:', err);
   const statusCode = err.statusCode || 500;
+  if (statusCode >= 500) {
+    console.error('Server error:', err);
+  } else {
+    console.log(`🔒 [${statusCode}] ${req.method} ${req.originalUrl || req.url}: ${err.message}`);
+  }
   res.status(statusCode).json({
     success: false,
     message: err.message || 'Something went wrong!',

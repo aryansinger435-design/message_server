@@ -1,6 +1,7 @@
 import { User } from '../models/User.model.js';
 import jwt from 'jsonwebtoken';
 import { ApiError } from '../utils/ApiError.js';
+import { JWT_SECRET, verifyJwtToken } from '../config/jwt.js';
 
 export class AuthService {
   // Register new user
@@ -42,7 +43,7 @@ export class AuthService {
   static generateTokens(userId) {
     const accessToken = jwt.sign(
       { userId },
-      process.env.JWT_SECRET || 'your-secret-key',
+      JWT_SECRET,
       { expiresIn: '7d' }
     );
     
@@ -52,7 +53,7 @@ export class AuthService {
   // Verify token
   static verifyToken(token) {
     try {
-      return jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+      return verifyJwtToken(token, jwt);
     } catch (error) {
       throw new ApiError(401, 'Invalid or expired token');
     }

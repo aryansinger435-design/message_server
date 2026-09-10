@@ -1,6 +1,7 @@
 import jwt from 'jsonwebtoken';
 import { User } from '../models/User.model.js';
 import { ApiError } from '../utils/ApiError.js';
+import { verifyJwtToken } from '../config/jwt.js';
 
 export const authenticateToken = async (req, res, next) => {
   try {
@@ -10,7 +11,7 @@ export const authenticateToken = async (req, res, next) => {
     }
 
     const token = authHeader.split(' ')[1];
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+    const decoded = verifyJwtToken(token, jwt);
 
     const user = await User.findById(decoded.userId).select('-password');
     if (!user) {

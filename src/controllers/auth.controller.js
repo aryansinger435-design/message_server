@@ -3,8 +3,7 @@ import OTP from '../models/OTP.js';
 import { sendOTP } from '../config/nodemailer.js'; 
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
-
-const JWT_SECRET = process.env.JWT_SECRET || 'aurawave_secret_key_2026_secure';
+import { JWT_SECRET, verifyJwtToken } from '../config/jwt.js';
 
 // Generate OTP
 const generateOTP = () => {
@@ -333,7 +332,7 @@ export const refreshToken = async (req, res) => {
             });
         }
 
-        const decoded = jwt.verify(refreshToken, JWT_SECRET);
+        const decoded = verifyJwtToken(refreshToken, jwt);
         
         const accessToken = jwt.sign(
             { userId: decoded.userId },
