@@ -41,7 +41,13 @@ app.use((req, res, next) => {
 
 // Universal CORS configuration & Preflight handler
 app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
+  const origin = req.headers.origin;
+  if (origin) {
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Access-Control-Allow-Credentials', 'true');
+  } else {
+    res.header('Access-Control-Allow-Origin', '*');
+  }
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin');
   if (req.method === 'OPTIONS') {
@@ -52,7 +58,8 @@ app.use((req, res, next) => {
 
 app.use(
   cors({
-    origin: '*',
+    origin: (origin, callback) => callback(null, true),
+    credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
   })
@@ -175,7 +182,7 @@ app.use((err, req, res, next) => {
 if (!process.env.VERCEL) {
   const io = new Server(httpServer, {
     cors: {
-      origin: '*',
+      origin: (origin, callback) => callback(null, true),
       methods: ['GET', 'POST'],
       credentials: true,
     },
