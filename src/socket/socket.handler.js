@@ -235,6 +235,15 @@ export const initializeSocket = (io) => {
       }
     });
 
+    // Helper to sanitize target user IDs regardless of whether object or string is passed
+    const sanitizeId = (id) => {
+      if (!id) return null;
+      if (typeof id === 'object') {
+        return (id._id || id.id || '').toString();
+      }
+      return id.toString();
+    };
+
     // ==========================================
     // 📞 WEBRTC VOICE & VIDEO CALL SIGNALING
     // ==========================================
@@ -242,26 +251,32 @@ export const initializeSocket = (io) => {
     // 1. Initiate Call
     socket.on('call-user', (data) => {
       const { userToCall, signalData, callType = 'voice' } = data;
-      if (!userToCall) return;
-      const targetUserId = userToCall.toString();
+      const targetUserId = sanitizeId(userToCall);
+      if (!targetUserId) {
+        console.warn('⚠️ call-user received without valid userToCall');
+        return;
+      }
 
-      console.log(`📞 Call initiated by ${socket.user.username} to user ${targetUserId} (${callType})`);
+      console.log(`📞 Call initiated by ${socket.user.username} (${userId}) to user ${targetUserId} (${callType})`);
 
       // Check if recipient is online in userSockets or room
       const recipientSockets = userSockets.get(targetUserId);
+      const roomSockets = io.sockets.adapter.rooms.get(`user:${targetUserId}`);
       const isOnline =
         (recipientSockets && recipientSockets.size > 0) ||
-        (io.sockets.adapter.rooms.get(`user:${targetUserId}`)?.size > 0);
+        (roomSockets && roomSockets.size > 0);
+
+      console.log(`ℹ️ Recipient ${targetUserId} status: online=${isOnline} (sockets: ${recipientSockets?.size || 0}, room: ${roomSockets?.size || 0})`);
 
       if (!isOnline) {
         // Recipient is offline, log missed call
         Call.create({
           caller: socket.user._id,
-          receiver: userToCall,
+          receiver: targetUserId,
           callType,
           status: 'missed',
           duration: 0,
-        }).catch(() => {});
+        }).catch((err) => console.error('Call.create missed error:', err.message));
 
         return socket.emit('call-failed', {
           reason: 'offline',
@@ -288,10 +303,10 @@ export const initializeSocket = (io) => {
     // 2. Accept Call
     socket.on('answer-call', (data) => {
       const { signal, to, callType = 'voice' } = data;
-      if (!to) return;
-      const targetUserId = to.toString();
+      const targetUserId = sanitizeId(to);
+      if (!targetUserId) return;
 
-      console.log(`✅ Call answered by ${socket.user.username} for user ${targetUserId}`);
+      console.log(`✅ Call answered by ${socket.user.username} (${userId}) for user ${targetUserId}`);
 
       activeCalls.set(userId, { withUser: targetUserId, callType });
 
@@ -306,8 +321,8 @@ export const initializeSocket = (io) => {
     // 3. ICE Candidate Relay
     socket.on('ice-candidate', (data) => {
       const { to, candidate } = data;
-      if (!to || !candidate) return;
-      const targetUserId = to.toString();
+      const targetUserId = sanitizeId(to);
+      if (!targetUserId || !candidate) return;
 
       io.to(`user:${targetUserId}`).emit('ice-candidate', {
         candidate,
@@ -318,8 +333,8 @@ export const initializeSocket = (io) => {
     // 4. Reject Call
     socket.on('reject-call', (data) => {
       const { to, callType = 'voice' } = data;
-      if (!to) return;
-      const targetUserId = to.toString();
+      const targetUserId = sanitizeId(to);
+      if (!targetUserId) return;
 
       console.log(`❌ Call rejected between ${userId} and ${targetUserId}`);
 
@@ -328,7 +343,7 @@ export const initializeSocket = (io) => {
 
       // Log rejected call
       Call.create({
-        caller: to,
+        caller: targetUserId,
         receiver: socket.user._id,
         callType,
         status: 'rejected',
@@ -344,9 +359,9 @@ export const initializeSocket = (io) => {
     // 5. End Call
     socket.on('end-call', (data) => {
       const { to, duration = 0, callType = 'voice' } = data;
-      const targetUserId = to ? to.toString() : null;
+      const targetUserId = sanitizeId(to);
 
-      console.log(`🛑 Call ended by ${socket.user.username}, duration: ${duration}s`);
+      console.log(`🛑 Call ended by ${socket.user.username} (${userId}), duration: ${duration}s, peer: ${targetUserId}`);
 
       activeCalls.delete(userId);
       if (targetUserId) {
@@ -355,7 +370,7 @@ export const initializeSocket = (io) => {
         // Log completed call
         Call.create({
           caller: socket.user._id,
-          receiver: to,
+          receiver: targetUserId,
           callType,
           status: duration > 0 ? 'completed' : 'missed',
           duration,

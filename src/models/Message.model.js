@@ -49,7 +49,7 @@ const messageSchema = new mongoose.Schema({
     },
     reaction: {
       type: String,
-      enum: ['❤️', '😂', '😮', '😢', '😡', '👍'],
+      trim: true,
     },
   }],
   readBy: [{
